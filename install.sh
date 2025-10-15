@@ -1,20 +1,11 @@
 #!/bin/bash
 #
 # This is the MAIN installer script for Netbird on EdgeOS.
+# It is designed to be run as a one-liner, taking the management URL as an argument.
 # It downloads the Netbird binary and installs the persistent boot script
-# directly from the launcestonit/netbird-edgeos GitHub repository.
+# from the launcestonit/netbird-edgeos GitHub repository.
 
 set -e
-
-# --- !! ACTION REQUIRED: CONFIGURE YOUR URL !! ---
-#
-# You MUST edit this variable to point to your self-hosted Netbird management server.
-# The script will not run with the default placeholder.
-#
-SELF_HOSTED_MANAGEMENT_URL="https://netbird.launcestonit.com.au"
-#
-# --- !! END OF REQUIRED CONFIGURATION !! ---
-
 
 # --- System Paths and URLs (Do not edit) ---
 PERSISTENT_CONFIG_DIR="/config/netbird"
@@ -23,16 +14,17 @@ ARCHIVE_CACHE_DIR="/config/data/netbird"
 CACHED_ARCHIVE_FILE="${ARCHIVE_CACHE_DIR}/netbird-latest.tar.gz"
 
 # This URL points to the raw version of the boot script in your GitHub repo.
-# Assumes the 'main' branch. Change if you use a different branch name.
 BOOT_SCRIPT_URL="https://raw.githubusercontent.com/launcestonit/netbird-edgeos/main/99-netbird-boot.sh"
 BOOT_SCRIPT_DEST="/config/scripts/post-config.d/99-netbird-boot.sh"
 
 
 # --- Main setup function ---
 setup() {
-    # --- Step 1: Validate Configuration ---
-    if [ -z "$SELF_HOSTED_MANAGEMENT_URL" ] || [ "$SELF_HOSTED_MANAGEMENT_URL" == "https://netbird.yourdomain.com" ]; then
-        echo "!! ERROR: You must edit this script and set SELF_HOSTED_MANAGEMENT_URL." >&2
+    # --- Step 1: Read Management URL from command-line argument ---
+    SELF_HOSTED_MANAGEMENT_URL="$1"
+    if [ -z "$SELF_HOSTED_MANAGEMENT_URL" ]; then
+        echo "!! ERROR: You must provide your self-hosted management URL as an argument." >&2
+        echo "!! Usage: sudo bash -s setup https://netbird.yourdomain.com" >&2
         exit 1
     fi
 
@@ -86,25 +78,34 @@ setup() {
     echo "--------------------------------------------------------------------"
 }
 
-# (The uninstall and main functions are the same as before, I'll include them for completeness)
-uninstall() {
-    echo "Uninstalling Netbird..."
-    systemctl stop netbird.service || true
-    if command -v netbird >/dev/null 2>&1; then /usr/sbin/netbird service uninstall || true; fi
-    systemctl disable netbird.service || true
-    echo "Removing system files, scripts, and configuration..."
-    rm -f /etc/systemd/system/netbird.service
-    rm -f /usr/sbin/netbird
-    rm -f "$BOOT_SCRIPT_DEST"
-    rm -rf "$ARCHIVE_CACHE_DIR"
-    rm -rf "$PERSISTENT_CONFIG_DIR"
-    systemctl daemon-reload
-    echo "Netbird has been uninstalled."
+# --- Main Script Entrypoint ---
+main() {
+    if [ "$(id -u)" -ne 0 ]; then echo "This script must be run as root." >&2; exit 1; fi
+    
+    COMMAND="$1"
+    URL_ARG="$2"
+
+    case "$COMMAND" in
+        setup|install)
+            setup "$URL_ARG"
+            ;;
+        uninstall)
+            # Uninstall logic can be added here if desired
+            echo "Uninstalling..."
+            systemctl stop netbird.service || true
+            if command -v netbird >/dev/null 2>&1; then /usr/sbin/netbird service uninstall || true; fi
+            rm -f /usr/sbin/netbird /etc/systemd/system/netbird.service
+            rm -rf /config/netbird /config/data/netbird
+            rm -f /config/scripts/post-config.d/99-netbird-boot.sh
+            systemctl daemon-reload
+            echo "Uninstall complete."
+            ;;
+        *)
+            echo "Usage: sudo bash -s setup <management_url>" >&2
+            echo "   or: sudo bash -s uninstall" >&2
+            exit 1
+            ;;
+    esac
 }
 
-if [ "$(id -u)" -ne 0 ]; then echo "This script must be run as root." >&2; exit 1; fi
-case "$1" in
-    setup|install) setup ;;
-    uninstall) uninstall ;;
-    *) echo "Usage: $0 {setup|install}" >&2; exit 1 ;;
-esac
+main "$@"

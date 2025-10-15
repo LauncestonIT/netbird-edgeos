@@ -161,22 +161,19 @@ if ! command -v netbird >/dev/null 2>&1; then
     reload=y
 fi
 
-if [ -n "$reload" ]; then
-    systemctl daemon-reload
-    systemctl enable netbird.service
-    systemctl --no-block restart netbird
-fi
-
-# Always ensure mount is active
+# Start mount if not active (non-blocking)
 if ! systemctl is-active --quiet var-lib-netbird.mount; then
     systemctl enable var-lib-netbird.mount
-    systemctl start var-lib-netbird.mount
+    systemctl --no-block start var-lib-netbird.mount
 fi
 
-# Always ensure service is active
-if ! systemctl is-active --quiet netbird.service; then
+# Restart or start service (non-blocking)
+if [ -n "$reload" ]; then
     systemctl enable netbird.service
-    systemctl start netbird.service
+    systemctl --no-block restart netbird.service
+elif ! systemctl is-active --quiet netbird.service; then
+    systemctl enable netbird.service
+    systemctl --no-block start netbird.service
 fi
 EOF
     chmod 755 /config/scripts/post-config.d/netbird.sh

@@ -1,183 +1,176 @@
-#!/bin/bash
-#
-# This is the single, self-contained installer script for Netbird on EdgeOS.
-# It is designed to be run as a one-liner, taking the management URL as an argument.
-# It creates robust, persistent boot scripts to ensure Netbird survives firmware upgrades.
-# It is heavily inspired by the design of the tailscale-edgeos script.
+#!/bin/sh
 
 set -e
 
-# --- System Paths (Do not edit) ---
-PERSISTENT_CONFIG_DIR="/config/netbird"
-INSTALLER_CONFIG_FILE="${PERSISTENT_CONFIG_DIR}/installer.conf"
-ARCHIVE_CACHE_DIR="/config/data/netbird"
-CACHED_ARCHIVE_FILE="${ARCHIVE_CACHE_DIR}/netbird-latest.tar.gz"
-FIRSTBOOT_SCRIPT_DEST="/config/scripts/firstboot.d/10-install-netbird.sh"
-POSTCONFIG_SCRIPT_DEST="/config/scripts/post-config.d/10-install-netbird.sh"
+# Configuration - set your management URL here
+MANAGEMENT_URL="${NETBIRD_MGMT_URL:-}"
 
-
-# --- Main setup function ---
-setup() {
-    # --- Step 1: Read Management URL from command-line argument ---
-    SELF_HOSTED_MANAGEMENT_URL="$1"
-    if [ -z "$SELF_HOSTED_MANAGEMENT_URL" ]; then
-        echo "!! ERROR: You must provide your self-hosted management URL as an argument." >&2
-        echo "!! Usage: ... | sudo bash -s setup https://netbird.yourdomain.com" >&2
-        exit 1
-    fi
-    echo "Setting up Netbird for management server: ${SELF_HOSTED_MANAGEMENT_URL}"
-
-    # --- Step 2: Download and Cache the Binary ---
-    echo "Determining correct architecture..."
-    MACHINE_ARCH=$(uname -m)
-    case $MACHINE_ARCH in
-      mips) ARCH="mips_softfloat" ;;
-      mips64) ARCH="mips64_hardfloat" ;;
-      aarch64) ARCH="arm64" ;;
-      *) echo "Fatal: Unsupported architecture: $MACHINE_ARCH" >&2; exit 1 ;;
-    esac
-    
-    echo "Finding and downloading latest Netbird version..."
-    API_URL="https://api.github.com/repos/netbirdio/netbird/releases/latest"
-    LATEST_TAG=$(curl -s "$API_URL" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-    if [ -z "$LATEST_TAG" ]; then echo "Fatal: Could not determine latest Netbird version." >&2; exit 1; fi
-    LATEST_VERSION=${LATEST_TAG#v}
-    DOWNLOAD_URL="https://github.com/netbirdio/netbird/releases/download/${LATEST_TAG}/netbird_${LATEST_VERSION}_linux_${ARCH}.tar.gz"
-
-    TMP_DIR=$(mktemp -d)
-    curl -L --fail -o "${TMP_DIR}/netbird.tar.gz" "$DOWNLOAD_URL"
-    echo "Caching downloaded archive to ${CACHED_ARCHIVE_FILE}..."
-    mkdir -p "$ARCHIVE_CACHE_DIR"
-    cp "${TMP_DIR}/netbird.tar.gz" "$CACHED_ARCHIVE_FILE"
-    rm -rf "$TMP_DIR"
-
-    # --- Step 3: Create Persistent Configuration and Scripts ---
-    echo "Creating persistent configuration and installing boot scripts..."
-    mkdir -p "$PERSISTENT_CONFIG_DIR"
-    mkdir -p "$(dirname "$FIRSTBOOT_SCRIPT_DEST")"
-    mkdir -p "$(dirname "$POSTCONFIG_SCRIPT_DEST")"
-
-    echo "SELF_HOSTED_MANAGEMENT_URL=\"${SELF_HOSTED_MANAGEMENT_URL}\"" > "$INSTALLER_CONFIG_FILE"
-
-    # --- Create the firstboot.d script ---
-    cat << 'EOF' > "$FIRSTBOOT_SCRIPT_DEST"
-#!/bin/bash
-# This script runs once after a firmware upgrade.
-# It calls the main post-config script to perform the actual re-installation.
-POST_CONFIG_SCRIPT="/config/scripts/post-config.d/10-install-netbird.sh"
-if [ -x "$POST_CONFIG_SCRIPT" ]; then
-    echo "Running Netbird post-config script from firstboot..."
-    "$POST_CONFIG_SCRIPT"
-fi
-EOF
-    chmod +x "$FIRSTBOOT_SCRIPT_DEST"
-
-    # --- Create the post-config.d script (the main worker) ---
-    cat << 'EOF' > "$POSTCONFIG_SCRIPT_DEST"
-#!/bin/bash
-# This is the main worker script. It ensures Netbird is installed and configured.
-
-# Only run installation logic if the binary is missing
-if ! command -v netbird >/dev/null 2>&1; then
-    echo "Netbird not found, installing from cache..."
-
-    # --- Define Paths ---
-    INSTALL_DIR="/usr/sbin"
-    BINARY_NAME="netbird"
-    PERSISTENT_CONFIG_DIR="/config/netbird"
-    INSTALLER_CONFIG_FILE="${PERSISTENT_CONFIG_DIR}/installer.conf"
-    PERSISTENT_CONFIG_FILE="${PERSISTENT_CONFIG_DIR}/config.json"
-    CACHED_ARCHIVE_FILE="/config/data/netbird/netbird-latest.tar.gz"
-
-    # --- Source the configuration to get the management URL ---
-    if [ ! -f "$INSTALLER_CONFIG_FILE" ]; then echo "FATAL: Installer config not found." >&2; exit 1; fi
-    source "$INSTALLER_CONFIG_FILE"
-    if [ ! -f "$CACHED_ARCHIVE_FILE" ]; then echo "FATAL: Netbird cache missing." >&2; exit 1; fi
-
-    # --- Installation Logic ---
-    TMP_DIR=$(mktemp -d)
-    tar -xzf "$CACHED_ARCHIVE_FILE" -C "$TMP_DIR"
-    install -m 755 "${TMP_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
-    mkdir -p "${PERSISTENT_CONFIG_DIR}"
-    SERVICE_INSTALL_CMD=("${INSTALL_DIR}/${BINARY_NAME}" service install --config "${PERSISTENT_CONFIG_FILE}" --management-url "${SELF_HOSTED_MANAGEMENT_URL}")
-    "${SERVICE_INSTALL_CMD[@]}"
-    rm -rf "$TMP_DIR"
+if [ -z "$MANAGEMENT_URL" ]; then
+    echo "Error: MANAGEMENT_URL not set"
+    echo "Set the NETBIRD_MGMT_URL environment variable before running:"
+    echo "  export NETBIRD_MGMT_URL=https://netbird.yourdomain.com"
+    echo "  sudo -E ./netbird-edgeos.sh"
+    exit 1
 fi
 
-# --- Systemd Override Logic (runs every boot to be safe) ---
-OVERRIDE_DIR="/config/netbird/systemd/netbird.service.d"
-OVERRIDE_FILE="${OVERRIDE_DIR}/10-wait-for-networking.conf"
-if [ ! -f "$OVERRIDE_FILE" ]; then
-    echo "Creating systemd override for networking dependency..."
-    mkdir -p "$OVERRIDE_DIR"
-    cat > "$OVERRIDE_FILE" <<-EOM
+# Determine architecture
+MACHINE_ARCH=$(uname -m)
+case $MACHINE_ARCH in
+    mips) ARCH="mips_softfloat" ;;
+    mips64) ARCH="mips64_hardfloat" ;;
+    aarch64) ARCH="arm64" ;;
+    *) echo "Error: Unsupported architecture: $MACHINE_ARCH" >&2; exit 1 ;;
+esac
+
+echo "Setting up Netbird for $ARCH with management server: $MANAGEMENT_URL"
+
+# Create directory structure
+mkdir -p /config/netbird/systemd/netbird.service.d
+mkdir -p /config/netbird/state
+mkdir -p /config/data/netbird
+
+# Store management URL for post-config script
+echo "MANAGEMENT_URL=$MANAGEMENT_URL" > /config/netbird/mgmt.conf
+
+# Download and cache Netbird binary
+echo "Downloading latest Netbird version..."
+API_URL="https://api.github.com/repos/netbirdio/netbird/releases/latest"
+LATEST_TAG=$(curl -s "$API_URL" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+if [ -z "$LATEST_TAG" ]; then
+    echo "Error: Could not determine latest Netbird version" >&2
+    exit 1
+fi
+LATEST_VERSION=${LATEST_TAG#v}
+DOWNLOAD_URL="https://github.com/netbirdio/netbird/releases/download/${LATEST_TAG}/netbird_${LATEST_VERSION}_linux_${ARCH}.tar.gz"
+
+echo "Downloading from $DOWNLOAD_URL..."
+curl -L --fail -o /config/data/netbird/netbird.tar.gz "$DOWNLOAD_URL"
+
+# Extract and install binary
+TMP_DIR=$(mktemp -d)
+tar -xzf /config/data/netbird/netbird.tar.gz -C "$TMP_DIR"
+install -m 755 "${TMP_DIR}/netbird" /usr/sbin/netbird
+rm -rf "$TMP_DIR"
+
+# Create state directory bind mount
+if [ ! -f /config/netbird/systemd/var-lib-netbird.mount ]; then
+    cat > /config/netbird/systemd/var-lib-netbird.mount <<-EOF
+[Mount]
+What=/config/netbird/state
+Where=/var/lib/netbird
+Type=none
+Options=bind
+
+[Install]
+WantedBy=multi-user.target
+	EOF
+fi
+
+# Add override to require the bind mount
+if [ ! -f /config/netbird/systemd/netbird.service.d/mount.conf ]; then
+    cat > /config/netbird/systemd/netbird.service.d/mount.conf <<-EOF
+[Unit]
+RequiresMountsFor=/var/lib/netbird
+	EOF
+fi
+
+# Add override to wait for networking
+if [ ! -f /config/netbird/systemd/netbird.service.d/wait-for-networking.conf ]; then
+    cat > /config/netbird/systemd/netbird.service.d/wait-for-networking.conf <<-EOF
 [Unit]
 Wants=vyatta-router.service
 After=vyatta-router.service
-EOM
+	EOF
 fi
 
-# Ensure the override is always linked correctly
+# Install service (this will create /etc/systemd/system/netbird.service)
+/usr/sbin/netbird service install --config /config/netbird/state/config.json
+
+# Link the overrides
 if [ ! -L /etc/systemd/system/netbird.service.d ]; then
-    ln -s "$OVERRIDE_DIR" /etc/systemd/system/netbird.service.d
+    ln -s /config/netbird/systemd/netbird.service.d /etc/systemd/system/netbird.service.d
+fi
+
+# Copy mount unit (must be copied, not linked)
+cp /config/netbird/systemd/var-lib-netbird.mount /etc/systemd/system/var-lib-netbird.mount
+
+systemctl daemon-reload
+
+# Start and enable the mount
+systemctl enable var-lib-netbird.mount
+systemctl start var-lib-netbird.mount
+
+# Start and enable netbird service
+systemctl enable netbird.service
+systemctl start netbird.service
+
+echo "Waiting for Netbird service to start..."
+sleep 2
+
+# Check if service is running
+if systemctl is-active --quiet netbird.service; then
+    echo "Netbird service is running"
+else
+    echo "Warning: Netbird service failed to start"
+    systemctl status netbird.service
+fi
+
+# Create post-config script
+mkdir -p /config/scripts/post-config.d
+if [ ! -x /config/scripts/post-config.d/netbird.sh ]; then
+    cat > /config/scripts/post-config.d/netbird.sh <<"EOF"
+#!/bin/sh
+
+set -e
+
+reload=""
+
+# The mount unit needs to be copied rather than linked
+if [ ! -f /etc/systemd/system/var-lib-netbird.mount ]; then
+    echo "Installing /var/lib/netbird mount unit"
+    cp /config/netbird/systemd/var-lib-netbird.mount /etc/systemd/system/var-lib-netbird.mount
+    reload=y
+fi
+
+if [ ! -L /etc/systemd/system/netbird.service.d ]; then
+    ln -s /config/netbird/systemd/netbird.service.d /etc/systemd/system/netbird.service.d
+    reload=y
+fi
+
+if [ -n "$reload" ]; then
     systemctl daemon-reload
+fi
+
+# Check if Netbird binary exists
+if ! command -v netbird >/dev/null 2>&1; then
+    echo "Installing Netbird from cache"
+    if [ ! -f /config/data/netbird/netbird.tar.gz ]; then
+        echo "Error: Cached Netbird archive not found" >&2
+        exit 1
+    fi
+    
+    TMP_DIR=$(mktemp -d)
+    tar -xzf /config/data/netbird/netbird.tar.gz -C "$TMP_DIR"
+    install -m 755 "${TMP_DIR}/netbird" /usr/sbin/netbird
+    rm -rf "$TMP_DIR"
+    
+    # Reinstall service
+    . /config/netbird/mgmt.conf
+    /usr/sbin/netbird service install --config /config/netbird/state/config.json
+    reload=y
+fi
+
+if [ -n "$reload" ]; then
+    systemctl --no-block restart netbird
 fi
 EOF
-    chmod +x "$POSTCONFIG_SCRIPT_DEST"
+    chmod 755 /config/scripts/post-config.d/netbird.sh
+fi
 
-    # --- Step 4: Run the Post-Config Script Now to Complete the Installation ---
-    echo "Running post-config script now to perform initial installation..."
-    "$POSTCONFIG_SCRIPT_DEST"
-
-    # --- Final User Instructions ---
-    UP_CMD="sudo /usr/sbin/netbird up --setup-key YOUR_SETUP_KEY --management-url ${SELF_HOSTED_MANAGEMENT_URL}"
-    echo ""
-    echo "--------------------------------------------------------------------"
-    echo " Netbird installation complete!"
-    echo " To connect your router, run: ${UP_CMD}"
-    echo "--------------------------------------------------------------------"
-}
-
-
-# --- Uninstall function ---
-uninstall() {
-    echo "Uninstalling Netbird..."
-    systemctl stop netbird.service || true
-    if command -v netbird >/dev/null 2>&1; then
-        /usr/sbin/netbird service uninstall || true
-    fi
-    systemctl disable netbird.service || true
-    
-    echo "Removing system files, scripts, and configuration..."
-    rm -f /etc/systemd/system/netbird.service
-    rm -rf /etc/systemd/system/netbird.service.d
-    rm -f /usr/sbin/netbird
-    rm -f "$FIRSTBOOT_SCRIPT_DEST"
-    rm -f "$POSTCONFIG_SCRIPT_DEST"
-    rm -rf "$ARCHIVE_CACHE_DIR"
-    rm -rf "$PERSISTENT_CONFIG_DIR"
-
-    systemctl daemon-reload
-    echo "Netbird has been uninstalled."
-}
-
-
-# --- Main Script Entrypoint ---
-main() {
-    if [ "$(id -u)" -ne 0 ]; then echo "This script must be run as root." >&2; exit 1; fi
-    
-    COMMAND="$1"
-    URL_ARG="$2"
-
-    case "$COMMAND" in
-        setup|install) setup "$URL_ARG" ;;
-        uninstall) uninstall ;;
-        *)
-            echo "Usage: ... | sudo bash -s setup <management_url>" >&2
-            echo "   or: ... | sudo bash -s uninstall" >&2
-            exit 1
-            ;;
-    esac
-}
-
-main "$@"
+echo ""
+echo "Netbird installation complete!"
+echo ""
+echo "To connect your router, run:"
+echo "  sudo netbird up --setup-key YOUR_SETUP_KEY --management-url $MANAGEMENT_URL"
+echo ""
+echo "The service will start automatically on boot."

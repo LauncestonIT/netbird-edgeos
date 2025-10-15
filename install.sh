@@ -11,7 +11,7 @@ set -e
 # You MUST edit this variable to point to your self-hosted Netbird management server.
 # The script will not run with the default placeholder.
 #
-SELF_HOSTED_MANAGEMENT_URL="https://netbird.yourdomain.com"
+SELF_HOSTED_MANAGEMENT_URL="https://netbird.launcestonit.com.au"
 #
 # --- !! END OF REQUIRED CONFIGURATION !! ---
 

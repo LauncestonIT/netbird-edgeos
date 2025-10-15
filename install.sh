@@ -17,7 +17,7 @@ setup() {
 # Determine architecture
 MACHINE_ARCH=$(uname -m)
 case $MACHINE_ARCH in
-    mips) ARCH="mips_softfloat" ;;
+    mips) ARCH="mipsle_softfloat" ;;
     mips64) ARCH="mips64_hardfloat" ;;
     aarch64) ARCH="arm64" ;;
     *) echo "Error: Unsupported architecture: $MACHINE_ARCH" >&2; exit 1 ;;

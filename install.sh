@@ -1,17 +1,18 @@
-#!/bin/sh
+#!/bin/bash
 
 set -e
 
-# Configuration - set your management URL here
-MANAGEMENT_URL="${NETBIRD_MGMT_URL:-}"
+# Parse command and management URL
+COMMAND="${1:-setup}"
+MANAGEMENT_URL="$2"
 
-if [ -z "$MANAGEMENT_URL" ]; then
-    echo "Error: MANAGEMENT_URL not set"
-    echo "Set the NETBIRD_MGMT_URL environment variable before running:"
-    echo "  export NETBIRD_MGMT_URL=https://netbird.yourdomain.com"
-    echo "  sudo -E ./netbird-edgeos.sh"
-    exit 1
-fi
+# Main function for setup
+setup() {
+    if [ -z "$MANAGEMENT_URL" ]; then
+        echo "Error: Management URL not provided"
+        echo "Usage: curl -fsSL https://raw.githubusercontent.com/LauncestonIT/netbird-edgeos/main/install.sh | sudo bash -s setup https://netbird.yourdomain.com"
+        exit 1
+    fi
 
 # Determine architecture
 MACHINE_ARCH=$(uname -m)
@@ -161,7 +162,21 @@ if ! command -v netbird >/dev/null 2>&1; then
 fi
 
 if [ -n "$reload" ]; then
+    systemctl daemon-reload
+    systemctl enable netbird.service
     systemctl --no-block restart netbird
+fi
+
+# Always ensure mount is active
+if ! systemctl is-active --quiet var-lib-netbird.mount; then
+    systemctl enable var-lib-netbird.mount
+    systemctl start var-lib-netbird.mount
+fi
+
+# Always ensure service is active
+if ! systemctl is-active --quiet netbird.service; then
+    systemctl enable netbird.service
+    systemctl start netbird.service
 fi
 EOF
     chmod 755 /config/scripts/post-config.d/netbird.sh
@@ -174,3 +189,20 @@ echo "To connect your router, run:"
 echo "  sudo netbird up --setup-key YOUR_SETUP_KEY --management-url $MANAGEMENT_URL"
 echo ""
 echo "The service will start automatically on boot."
+}
+
+# Main script entrypoint
+if [ "$(id -u)" -ne 0 ]; then
+    echo "This script must be run as root" >&2
+    exit 1
+fi
+
+case "$COMMAND" in
+    setup)
+        setup
+        ;;
+    *)
+        echo "Usage: curl -fsSL https://raw.githubusercontent.com/LauncestonIT/netbird-edgeos/main/install.sh | sudo bash -s setup <management_url>" >&2
+        exit 1
+        ;;
+esac
